@@ -1,0 +1,4 @@
+use openFPGALoader instead of the gowin programmer:
+
+openFPGALoader  -b tangnano led_prj.fs 
+openFPGALoader  -b tangnano --write-flash led_prj.fs
