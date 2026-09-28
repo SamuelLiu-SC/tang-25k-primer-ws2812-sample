@@ -76,7 +76,7 @@ architecture Behavioral of led is
 
     -- Ball speed, in game ticks per court-position move; speeds up after every hit
     constant INITIAL_MOVE_PERIOD : integer := 15; -- ~150ms/step at the start of a rally
-    constant MIN_MOVE_PERIOD     : integer := 3;  -- ~30ms/step, fastest allowed
+    constant MIN_MOVE_PERIOD     : integer := 5;  -- ~50ms/step, fastest allowed (was 3 - too fast to react to)
     signal move_period       : integer range MIN_MOVE_PERIOD to INITIAL_MOVE_PERIOD := INITIAL_MOVE_PERIOD;
     signal move_tick_counter : integer range 0 to INITIAL_MOVE_PERIOD - 1 := 0;
 
@@ -86,6 +86,10 @@ architecture Behavioral of led is
     signal flash_timer       : integer range 0 to FLASH_HALF_PERIOD - 1 := 0;
     signal flash_halves_done : integer range 0 to FLASH_HALVES - 1 := 0;
     signal flash_on          : std_logic := '0';
+
+    -- Catch zone: the last few LEDs before each paddle all count as within reach,
+    -- instead of only the very last LED, giving several ticks to react
+    constant PADDLE_ZONE : integer := 4;
 
     type game_state_t is (ST_WAIT_SERVE, ST_PLAY, ST_MISS_FLASH, ST_ROUND_READY, ST_GAME_OVER);
     signal game_state       : game_state_t := ST_WAIT_SERVE;
@@ -360,9 +364,9 @@ begin
                         if move_tick_counter = move_period - 1 then
                             move_tick_counter <= 0;
 
-                            if ball_pos = 0 and ball_going_right = '0' then
-                                -- Player 1's end: server may hit with any button and pick a new
-                                -- color; the receiver must match the ball's current color
+                            if ball_pos < PADDLE_ZONE and ball_going_right = '0' then
+                                -- Player 1's catch zone: server may hit with any button and pick
+                                -- a new color; the receiver must match the ball's current color
                                 if (server_is_p1 = '1' and p1_hit = '1') or
                                    (server_is_p1 = '0' and color_matches(ball_color, not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B)) = '1') then
                                     ball_going_right <= '1';
@@ -372,7 +376,7 @@ begin
                                     if move_period > MIN_MOVE_PERIOD then
                                         move_period <= move_period - 1;
                                     end if;
-                                else
+                                elsif ball_pos = 0 then
                                     miss_side <= '0';
                                     game_state <= ST_MISS_FLASH;
                                     flash_timer <= 0;
@@ -382,9 +386,11 @@ begin
                                         score_p2 <= score_p2 + 1;
                                     end if;
                                     score_toggle <= not score_toggle;
+                                else
+                                    ball_pos <= ball_pos - 1; -- still time to react
                                 end if;
-                            elsif ball_pos = NUM_LEDS - 1 and ball_going_right = '1' then
-                                -- Player 2's end: same server/receiver rule, mirrored
+                            elsif ball_pos >= NUM_LEDS - PADDLE_ZONE and ball_going_right = '1' then
+                                -- Player 2's catch zone: same server/receiver rule, mirrored
                                 if (server_is_p1 = '0' and p2_hit = '1') or
                                    (server_is_p1 = '1' and color_matches(ball_color, not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B)) = '1') then
                                     ball_going_right <= '0';
@@ -394,7 +400,7 @@ begin
                                     if move_period > MIN_MOVE_PERIOD then
                                         move_period <= move_period - 1;
                                     end if;
-                                else
+                                elsif ball_pos = NUM_LEDS - 1 then
                                     miss_side <= '1';
                                     game_state <= ST_MISS_FLASH;
                                     flash_timer <= 0;
@@ -404,6 +410,8 @@ begin
                                         score_p1 <= score_p1 + 1;
                                     end if;
                                     score_toggle <= not score_toggle;
+                                else
+                                    ball_pos <= ball_pos + 1; -- still time to react
                                 end if;
                             else
                                 if ball_going_right = '1' then
