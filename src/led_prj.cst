@@ -8,3 +8,18 @@
 
 IO_LOC "ws2812" C10;
 IO_PORT "ws2812" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+// Status inputs shown on the first 6 ws2812 LEDs (pin_in[0]=G7 ... pin_in[5]=J5)
+IO_LOC "pin_in[0]" G7;
+IO_PORT "pin_in[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "pin_in[1]" H8;
+IO_PORT "pin_in[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "pin_in[2]" H5;
+IO_PORT "pin_in[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "pin_in[3]" G8;
+IO_PORT "pin_in[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "pin_in[4]" H7;
+IO_PORT "pin_in[4]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "pin_in[5]" J5;
+IO_PORT "pin_in[5]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+

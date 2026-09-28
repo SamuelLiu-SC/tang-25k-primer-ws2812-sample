@@ -4,7 +4,9 @@ use IEEE.NUMERIC_STD.ALL;
 
 entity led is
     Port (
-        ws2812 : out STD_LOGIC
+        ws2812 : out STD_LOGIC;
+        -- Status inputs shown on the first 6 LEDs, in order: G7, H8, H5, G8, H7, J5
+        pin_in : in  STD_LOGIC_VECTOR(5 downto 0)
     );
 end led;
 
@@ -31,6 +33,7 @@ architecture Behavioral of led is
     constant RESET_CYCLES  : integer := 4000; -- >300us latch/reset gap (WS2812B-V5 needs >=280us)
 
     constant NUM_LEDS      : integer := 50; -- LEDs chained on the ws2812 line
+    constant NUM_PIN_LEDS  : integer := 6;  -- Leading LEDs that mirror pin_in status
 
     type ws2812_state_t is (ST_RESET, ST_BIT_HIGH, ST_BIT_LOW);
     signal ws_state    : ws2812_state_t := ST_RESET;
@@ -39,6 +42,26 @@ architecture Behavioral of led is
     signal ws_led_idx  : integer range 0 to NUM_LEDS - 1 := 0;
     signal ws_color    : std_logic_vector(23 downto 0) := (others => '0');
     signal ws_high_len : integer range 0 to T1H_CYCLES := 0;
+
+    -- Double-flop synchronizers for the async pin_in inputs
+    signal pin_in_meta : std_logic_vector(5 downto 0) := (others => '0');
+    signal pin_in_sync : std_logic_vector(5 downto 0) := (others => '0');
+
+    -- Debounce: only accept a pin change once it has held steady for a full DEBOUNCE_TICKS period
+    constant DEBOUNCE_TICKS : integer := 13124; -- ~1ms at ~13.125MHz
+    signal db_counter : integer range 0 to DEBOUNCE_TICKS - 1 := 0;
+    signal pin_prev    : std_logic_vector(5 downto 0) := (others => '0');
+    signal pin_stable  : std_logic_vector(5 downto 0) := (others => '0');
+
+    -- Color for a given LED index, evaluated directly (no dependency on the ws_led_idx register)
+    function led_color(idx : integer; pins : std_logic_vector(5 downto 0)) return std_logic_vector is
+    begin
+        if idx < NUM_PIN_LEDS and pins(idx) = '1' then
+            return x"FFFFFF";
+        else
+            return x"000000";
+        end if;
+    end function;
 begin
 
     u_osca : OSCA
@@ -62,15 +85,31 @@ begin
         end if;
     end process;
 
-    -- Maps the rotating single-color pattern onto a full-brightness GRB word
-    process(led_reg)
+    -- Synchronize async pin_in inputs into the clk domain
+    process(clk)
     begin
-        case led_reg is
-            when "110"  => ws_color <= x"00FF00"; -- Red
-            when "101"  => ws_color <= x"0000FF"; -- Blue
-            when "011"  => ws_color <= x"FF0000"; -- Green
-            when others => ws_color <= (others => '0');
-        end case;
+        if rising_edge(clk) then
+            pin_in_meta <= pin_in;
+            pin_in_sync <= pin_in_meta;
+        end if;
+    end process;
+
+    -- Debounce: latch a bit into pin_stable only when it matches the prior tick's sample
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if db_counter = DEBOUNCE_TICKS - 1 then
+                db_counter <= 0;
+                for i in 0 to 5 loop
+                    if pin_in_sync(i) = pin_prev(i) then
+                        pin_stable(i) <= pin_in_sync(i);
+                    end if;
+                end loop;
+                pin_prev <= pin_in_sync;
+            else
+                db_counter <= db_counter + 1;
+            end if;
+        end if;
     end process;
 
     -- Process 2: WS2812 serial driver
@@ -84,7 +123,8 @@ begin
                         ws_timer <= 0;
                         ws_bit_idx <= 23;
                         ws_led_idx <= 0;
-                        if ws_color(23) = '1' then
+                        ws_color <= led_color(0, pin_stable);
+                        if led_color(0, pin_stable)(23) = '1' then
                             ws_high_len <= T1H_CYCLES;
                         else
                             ws_high_len <= T0H_CYCLES;
@@ -113,7 +153,8 @@ begin
                             else
                                 ws_led_idx <= ws_led_idx + 1;
                                 ws_bit_idx <= 23;
-                                if ws_color(23) = '1' then
+                                ws_color <= led_color(ws_led_idx + 1, pin_stable);
+                                if led_color(ws_led_idx + 1, pin_stable)(23) = '1' then
                                     ws_high_len <= T1H_CYCLES;
                                 else
                                     ws_high_len <= T0H_CYCLES;
