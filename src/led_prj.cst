@@ -9,17 +9,23 @@
 IO_LOC "ws2812" C10;
 IO_PORT "ws2812" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 
-// Status inputs shown on the first 6 ws2812 LEDs (pin_in[0]=G7 ... pin_in[5]=J5)
-IO_LOC "pin_in[0]" G7;
+// Player 1 paddle buttons: R=H5, G=H8, B=G7. Player 2 paddle buttons: R=J5, B=G8, G=H7
+IO_LOC "pin_in[0]" H5;
 IO_PORT "pin_in[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC "pin_in[1]" H8;
 IO_PORT "pin_in[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC "pin_in[2]" H5;
+IO_LOC "pin_in[2]" G7;
 IO_PORT "pin_in[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC "pin_in[3]" G8;
+IO_LOC "pin_in[3]" J5;
 IO_PORT "pin_in[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC "pin_in[4]" H7;
+IO_LOC "pin_in[4]" G8;
 IO_PORT "pin_in[4]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC "pin_in[5]" J5;
+IO_LOC "pin_in[5]" H7;
 IO_PORT "pin_in[5]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// SSD1306 OLED, open-drain I2C bus; internal pull-up is a backup for the module's own resistors
+IO_LOC "oled_scl" C11;
+IO_PORT "oled_scl" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "oled_sda" B11;
+IO_PORT "oled_sda" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
