@@ -87,12 +87,13 @@ architecture Behavioral of led is
     signal flash_halves_done : integer range 0 to FLASH_HALVES - 1 := 0;
     signal flash_on          : std_logic := '0';
 
-    type game_state_t is (ST_PLAY, ST_MISS_FLASH, ST_GAME_OVER);
-    signal game_state       : game_state_t := ST_PLAY;
+    type game_state_t is (ST_WAIT_SERVE, ST_PLAY, ST_MISS_FLASH, ST_ROUND_READY, ST_GAME_OVER);
+    signal game_state       : game_state_t := ST_WAIT_SERVE;
     signal ball_pos         : integer range 0 to NUM_LEDS - 1 := NUM_LEDS / 2;
     signal ball_going_right : std_logic := '1';
     signal ball_color       : std_logic_vector(23 downto 0) := COLOR_WHITE;
     signal miss_side        : std_logic := '0'; -- '0' = Player 1's end missed, '1' = Player 2's end missed
+    signal server_is_p1     : std_logic := '1'; -- '1' = P1 sets the color and P2 must match it, '0' = vice versa
 
     -- Player scores, shown on the OLED
     constant WIN_SCORE    : integer := 7; -- first to reach this many points freezes the game
@@ -132,6 +133,20 @@ architecture Behavioral of led is
         end if;
     end function;
 
+    -- True if the receiver pressed the button matching the ball's current color
+    function color_matches(ball_col : std_logic_vector(23 downto 0); r, g, b : std_logic) return std_logic is
+    begin
+        if ball_col = COLOR_RED and r = '1' then
+            return '1';
+        elsif ball_col = COLOR_GREEN and g = '1' then
+            return '1';
+        elsif ball_col = COLOR_BLUE and b = '1' then
+            return '1';
+        else
+            return '0';
+        end if;
+    end function;
+
     -- SSD1306 OLED, driven by a bit-banged open-drain I2C master
     constant OLED_ADDR_BYTE : std_logic_vector(7 downto 0) := x"78"; -- 0x3C write
 
@@ -160,56 +175,63 @@ architecture Behavioral of led is
         8 => (x"36", x"49", x"49", x"49", x"36"),
         9 => (x"06", x"49", x"49", x"29", x"1E")
     );
+    constant LETTER_V : font_row_t := (x"0F", x"30", x"40", x"30", x"0F");
+    -- (letter 'S' reuses the DIGIT_FONT(5) glyph, since a block '5' already reads as an 'S')
 
-    -- Digits fill the whole 128x64 screen: 6x horizontal stretch, and since the font only
-    -- uses 7 rows, each font row maps to exactly one whole OLED page (8px) - no fractional
-    -- vertical scaling needed. Each score (2 digits) exactly spans one half of the screen.
-    constant GLYPH_W  : integer := 5;
-    constant SCALE_X  : integer := 6;
-    constant DIGIT_W  : integer := GLYPH_W * SCALE_X; -- 30px
-    constant GAP_W     : integer := 4;                -- 30 + 4 + 30 = 64px, exactly half the screen
+    constant GLYPH_W : integer := 5; -- font columns
+
+    -- Each score is a single big digit (0-9); "VS" sits smaller in the middle
+    constant SCALE_SCORE : integer := 8;
+    constant DIGIT_W     : integer := GLYPH_W * SCALE_SCORE; -- 40px
+    constant DIGIT_H     : integer := 7 * SCALE_SCORE;       -- 56px
+    constant DIGIT_Y     : integer := (64 - DIGIT_H) / 2;    -- vertically centered
+    constant P1_DIGIT_X  : integer := 4;
+    constant P2_DIGIT_X  : integer := 128 - 4 - DIGIT_W;
+
+    constant SCALE_VS  : integer := 3;
+    constant LETTER_W  : integer := GLYPH_W * SCALE_VS; -- 15px
+    constant LETTER_H  : integer := 7 * SCALE_VS;       -- 21px
+    constant VS_GAP    : integer := 3;
+    constant VS_Y      : integer := (64 - LETTER_H) / 2;
+    constant VS_V_X    : integer := (128 - (LETTER_W * 2 + VS_GAP)) / 2;
+    constant VS_S_X    : integer := VS_V_X + LETTER_W + VS_GAP;
+
+    -- Whether pixel (x,y) of the 128x64 screen is lit: P1's digit, P2's digit, or "VS"
+    -- (p2 is drawn on the left, p1 on the right, per the earlier requested swap)
+    function score_pixel(x, y, p1, p2 : integer) return std_logic is
+        variable col, row : integer;
+    begin
+        if x >= P1_DIGIT_X and x < P1_DIGIT_X + DIGIT_W and y >= DIGIT_Y and y < DIGIT_Y + DIGIT_H then
+            col := (x - P1_DIGIT_X) / SCALE_SCORE;
+            row := (y - DIGIT_Y) / SCALE_SCORE;
+            return DIGIT_FONT(p2 mod 10)(col)(row);
+        elsif x >= P2_DIGIT_X and x < P2_DIGIT_X + DIGIT_W and y >= DIGIT_Y and y < DIGIT_Y + DIGIT_H then
+            col := (x - P2_DIGIT_X) / SCALE_SCORE;
+            row := (y - DIGIT_Y) / SCALE_SCORE;
+            return DIGIT_FONT(p1 mod 10)(col)(row);
+        elsif x >= VS_V_X and x < VS_V_X + LETTER_W and y >= VS_Y and y < VS_Y + LETTER_H then
+            col := (x - VS_V_X) / SCALE_VS;
+            row := (y - VS_Y) / SCALE_VS;
+            return LETTER_V(col)(row);
+        elsif x >= VS_S_X and x < VS_S_X + LETTER_W and y >= VS_Y and y < VS_Y + LETTER_H then
+            col := (x - VS_S_X) / SCALE_VS;
+            row := (y - VS_Y) / SCALE_VS;
+            return DIGIT_FONT(5)(col)(row);
+        else
+            return '0';
+        end if;
+    end function;
 
     -- Data byte (idx 0..1023: page 0's 128 columns, then page 1's, ... through page 7's)
-    -- (p2 is drawn on the left half, p1 on the right half, per the requested swap)
     function score_row_byte(idx, p1, p2 : integer) return std_logic_vector is
-        variable page, x, digit, local_x, col : integer;
+        variable page, x : integer;
         variable b : std_logic_vector(7 downto 0);
     begin
         page := idx / 128;
         x    := idx mod 128;
-
-        if page > 6 then
-            return x"00"; -- bottom page left blank; font only has 7 rows
-        end if;
-
-        if x < 64 then
-            if x < DIGIT_W then
-                digit := p2 / 10;
-                local_x := x;
-            elsif x >= DIGIT_W + GAP_W then
-                digit := p2 mod 10;
-                local_x := x - (DIGIT_W + GAP_W);
-            else
-                return x"00";
-            end if;
-        else
-            if x < 64 + DIGIT_W then
-                digit := p1 / 10;
-                local_x := x - 64;
-            elsif x >= 64 + DIGIT_W + GAP_W then
-                digit := p1 mod 10;
-                local_x := x - (64 + DIGIT_W + GAP_W);
-            else
-                return x"00";
-            end if;
-        end if;
-
-        col := local_x / SCALE_X;
-        if DIGIT_FONT(digit)(col)(page) = '1' then
-            b := (others => '1');
-        else
-            b := (others => '0');
-        end if;
+        for i in 0 to 7 loop
+            b(i) := score_pixel(x, page * 8 + i, p1, p2);
+        end loop;
         return b;
     end function;
 
@@ -317,14 +339,36 @@ begin
                 p2_hit := (not pin_stable(P2_R)) or (not pin_stable(P2_G)) or (not pin_stable(P2_B));
 
                 case game_state is
+                    when ST_WAIT_SERVE =>
+                        -- Whoever presses first becomes server: sets color on every hit,
+                        -- while the other player must match that color to return it
+                        if p1_hit = '1' then
+                            server_is_p1 <= '1';
+                            ball_pos <= 0;
+                            ball_going_right <= '1';
+                            ball_color <= hit_color(not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B));
+                            game_state <= ST_PLAY;
+                        elsif p2_hit = '1' then
+                            server_is_p1 <= '0';
+                            ball_pos <= NUM_LEDS - 1;
+                            ball_going_right <= '0';
+                            ball_color <= hit_color(not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B));
+                            game_state <= ST_PLAY;
+                        end if;
+
                     when ST_PLAY =>
                         if move_tick_counter = move_period - 1 then
                             move_tick_counter <= 0;
 
                             if ball_pos = 0 and ball_going_right = '0' then
-                                if p1_hit = '1' then
+                                -- Player 1's end: server may hit with any button and pick a new
+                                -- color; the receiver must match the ball's current color
+                                if (server_is_p1 = '1' and p1_hit = '1') or
+                                   (server_is_p1 = '0' and color_matches(ball_color, not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B)) = '1') then
                                     ball_going_right <= '1';
-                                    ball_color <= hit_color(not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B));
+                                    if server_is_p1 = '1' then
+                                        ball_color <= hit_color(not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B));
+                                    end if;
                                     if move_period > MIN_MOVE_PERIOD then
                                         move_period <= move_period - 1;
                                     end if;
@@ -340,9 +384,13 @@ begin
                                     score_toggle <= not score_toggle;
                                 end if;
                             elsif ball_pos = NUM_LEDS - 1 and ball_going_right = '1' then
-                                if p2_hit = '1' then
+                                -- Player 2's end: same server/receiver rule, mirrored
+                                if (server_is_p1 = '0' and p2_hit = '1') or
+                                   (server_is_p1 = '1' and color_matches(ball_color, not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B)) = '1') then
                                     ball_going_right <= '0';
-                                    ball_color <= hit_color(not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B));
+                                    if server_is_p1 = '0' then
+                                        ball_color <= hit_color(not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B));
+                                    end if;
                                     if move_period > MIN_MOVE_PERIOD then
                                         move_period <= move_period - 1;
                                     end if;
@@ -374,15 +422,17 @@ begin
                             flash_on <= not flash_on;
                             if flash_halves_done = FLASH_HALVES - 1 then
                                 flash_halves_done <= 0;
+                                -- Whoever just scored (i.e. didn't miss) serves the next rally
+                                if miss_side = '1' then
+                                    server_is_p1 <= '1';
+                                else
+                                    server_is_p1 <= '0';
+                                end if;
                                 if score_p1 = WIN_SCORE or score_p2 = WIN_SCORE then
                                     game_state <= ST_GAME_OVER;
                                 else
-                                    ball_pos <= NUM_LEDS / 2;
-                                    ball_going_right <= miss_side;
-                                    ball_color <= COLOR_WHITE;
-                                    move_period <= INITIAL_MOVE_PERIOD;
-                                    move_tick_counter <= 0;
-                                    game_state <= ST_PLAY;
+                                    -- Wait for any button before serving the next round
+                                    game_state <= ST_ROUND_READY;
                                 end if;
                             else
                                 flash_halves_done <= flash_halves_done + 1;
@@ -391,13 +441,43 @@ begin
                             flash_timer <= flash_timer + 1;
                         end if;
 
+                    when ST_ROUND_READY =>
+                        -- Only the point's winner (now the server) can launch the next rally,
+                        -- and the button they press sets the new ball color
+                        if server_is_p1 = '1' and p1_hit = '1' then
+                            ball_pos <= 0;
+                            ball_going_right <= '1';
+                            ball_color <= hit_color(not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B));
+                            move_period <= INITIAL_MOVE_PERIOD;
+                            move_tick_counter <= 0;
+                            game_state <= ST_PLAY;
+                        elsif server_is_p1 = '0' and p2_hit = '1' then
+                            ball_pos <= NUM_LEDS - 1;
+                            ball_going_right <= '0';
+                            ball_color <= hit_color(not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B));
+                            move_period <= INITIAL_MOVE_PERIOD;
+                            move_tick_counter <= 0;
+                            game_state <= ST_PLAY;
+                        end if;
+
                     when ST_GAME_OVER =>
-                        if p1_hit = '1' or p2_hit = '1' then
+                        -- Only the winner (the recorded server) can serve the next game
+                        if server_is_p1 = '1' and p1_hit = '1' then
                             score_p1 <= 0;
                             score_p2 <= 0;
-                            ball_pos <= NUM_LEDS / 2;
+                            ball_pos <= 0;
                             ball_going_right <= '1';
-                            ball_color <= COLOR_WHITE;
+                            ball_color <= hit_color(not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B));
+                            move_period <= INITIAL_MOVE_PERIOD;
+                            move_tick_counter <= 0;
+                            score_toggle <= not score_toggle;
+                            game_state <= ST_PLAY;
+                        elsif server_is_p1 = '0' and p2_hit = '1' then
+                            score_p1 <= 0;
+                            score_p2 <= 0;
+                            ball_pos <= NUM_LEDS - 1;
+                            ball_going_right <= '0';
+                            ball_color <= hit_color(not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B));
                             move_period <= INITIAL_MOVE_PERIOD;
                             move_tick_counter <= 0;
                             score_toggle <= not score_toggle;
