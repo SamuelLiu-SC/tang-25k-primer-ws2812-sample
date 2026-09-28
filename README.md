@@ -3,5 +3,5 @@ tang 25k primer ws2812 sample
 50 leds 
 
 
-![Logo](images/a9cc14cc-a783-4215-8c55-1f4837ecd1f3.jpeg)
+![Logo](images/4e23ddb2-fae8-4ede-a78a-4f0c8bbd6991.jpeg)
 
