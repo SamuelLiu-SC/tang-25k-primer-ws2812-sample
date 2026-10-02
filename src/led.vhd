@@ -76,7 +76,7 @@ architecture Behavioral of led is
 
     -- Ball speed, in game ticks per court-position move; speeds up after every hit
     constant INITIAL_MOVE_PERIOD : integer := 15; -- ~150ms/step at the start of a rally
-    constant MIN_MOVE_PERIOD     : integer := 5;  -- ~50ms/step, fastest allowed (was 3 - too fast to react to)
+    constant MIN_MOVE_PERIOD     : integer := 3;  -- ~50ms/step, fastest allowed (was 3 - too fast to react to)
     signal move_period       : integer range MIN_MOVE_PERIOD to INITIAL_MOVE_PERIOD := INITIAL_MOVE_PERIOD;
     signal move_tick_counter : integer range 0 to INITIAL_MOVE_PERIOD - 1 := 0;
 
@@ -89,7 +89,7 @@ architecture Behavioral of led is
 
     -- Catch zone: the last few LEDs before each paddle all count as within reach,
     -- instead of only the very last LED, giving several ticks to react
-    constant PADDLE_ZONE : integer := 4;
+    constant PADDLE_ZONE : integer := 3;
 
     type game_state_t is (ST_WAIT_SERVE, ST_PLAY, ST_MISS_FLASH, ST_ROUND_READY, ST_GAME_OVER);
     signal game_state       : game_state_t := ST_WAIT_SERVE;
@@ -182,6 +182,14 @@ architecture Behavioral of led is
     constant LETTER_V : font_row_t := (x"0F", x"30", x"40", x"30", x"0F");
     -- (letter 'S' reuses the DIGIT_FONT(5) glyph, since a block '5' already reads as an 'S')
 
+    -- Extra glyphs for the "GAME OVER" banner
+    constant LETTER_G : font_row_t := (x"3E", x"41", x"49", x"49", x"7A");
+    constant LETTER_A : font_row_t := (x"7E", x"11", x"11", x"11", x"7E");
+    constant LETTER_M : font_row_t := (x"7F", x"02", x"0C", x"02", x"7F");
+    constant LETTER_E : font_row_t := (x"7F", x"49", x"49", x"49", x"41");
+    constant LETTER_O : font_row_t := (x"3E", x"41", x"41", x"41", x"3E");
+    constant LETTER_R : font_row_t := (x"7F", x"09", x"19", x"29", x"46");
+
     constant GLYPH_W : integer := 5; -- font columns
 
     -- Each score is a single big digit (0-9); "VS" sits smaller in the middle
@@ -226,15 +234,60 @@ architecture Behavioral of led is
         end if;
     end function;
 
+    -- "GAME OVER" banner, shown in place of the score while game_state = ST_GAME_OVER
+    type gameover_char_t is (CH_G, CH_A, CH_M, CH_E, CH_SPACE, CH_O, CH_V, CH_R);
+    type gameover_text_t is array (0 to 8) of gameover_char_t;
+    constant GAMEOVER_TEXT : gameover_text_t := (CH_G, CH_A, CH_M, CH_E, CH_SPACE, CH_O, CH_V, CH_E, CH_R);
+
+    constant SCALE_GAMEOVER  : integer := 2;
+    constant GAMEOVER_W      : integer := GLYPH_W * SCALE_GAMEOVER; -- 10px
+    constant GAMEOVER_H      : integer := 7 * SCALE_GAMEOVER;       -- 14px
+    constant GAMEOVER_GAP    : integer := 2;
+    constant GAMEOVER_STEP   : integer := GAMEOVER_W + GAMEOVER_GAP;
+    constant GAMEOVER_X0     : integer := (128 - (GAMEOVER_TEXT'length * GAMEOVER_STEP - GAMEOVER_GAP)) / 2;
+    constant GAMEOVER_Y      : integer := (64 - GAMEOVER_H) / 2;
+
+    function gameover_pixel(x, y : integer) return std_logic is
+        variable idx, local_x, col, row : integer;
+    begin
+        if x < GAMEOVER_X0 or y < GAMEOVER_Y or y >= GAMEOVER_Y + GAMEOVER_H then
+            return '0';
+        end if;
+        idx := (x - GAMEOVER_X0) / GAMEOVER_STEP;
+        if idx > GAMEOVER_TEXT'high then
+            return '0';
+        end if;
+        local_x := (x - GAMEOVER_X0) - idx * GAMEOVER_STEP;
+        if local_x >= GAMEOVER_W then
+            return '0'; -- gap between letters
+        end if;
+        col := local_x / SCALE_GAMEOVER;
+        row := (y - GAMEOVER_Y) / SCALE_GAMEOVER;
+        case GAMEOVER_TEXT(idx) is
+            when CH_G     => return LETTER_G(col)(row);
+            when CH_A     => return LETTER_A(col)(row);
+            when CH_M     => return LETTER_M(col)(row);
+            when CH_E     => return LETTER_E(col)(row);
+            when CH_O     => return LETTER_O(col)(row);
+            when CH_V     => return LETTER_V(col)(row);
+            when CH_R     => return LETTER_R(col)(row);
+            when CH_SPACE => return '0';
+        end case;
+    end function;
+
     -- Data byte (idx 0..1023: page 0's 128 columns, then page 1's, ... through page 7's)
-    function score_row_byte(idx, p1, p2 : integer) return std_logic_vector is
+    function score_row_byte(idx, p1, p2 : integer; show_gameover : std_logic) return std_logic_vector is
         variable page, x : integer;
         variable b : std_logic_vector(7 downto 0);
     begin
         page := idx / 128;
         x    := idx mod 128;
         for i in 0 to 7 loop
-            b(i) := score_pixel(x, page * 8 + i, p1, p2);
+            if show_gameover = '1' then
+                b(i) := gameover_pixel(x, page * 8 + i);
+            else
+                b(i) := score_pixel(x, page * 8 + i, p1, p2);
+            end if;
         end loop;
         return b;
     end function;
@@ -250,7 +303,7 @@ architecture Behavioral of led is
         end if;
     end function;
 
-    function seq_byte(txn : i2c_txn_t; idx, p1, p2 : integer) return std_logic_vector is
+    function seq_byte(txn : i2c_txn_t; idx, p1, p2 : integer; show_gameover : std_logic) return std_logic_vector is
     begin
         if txn = TXN_INIT then
             return INIT_SEQ(idx);
@@ -259,7 +312,7 @@ architecture Behavioral of led is
         elsif idx = 1 then
             return x"40";
         else
-            return score_row_byte(idx - 2, p1, p2);
+            return score_row_byte(idx - 2, p1, p2, show_gameover);
         end if;
     end function;
 
@@ -278,7 +331,10 @@ architecture Behavioral of led is
     signal scl_low      : std_logic := '0'; -- '1' = actively drive SCL low; '0' = release (pulled up high)
     signal sda_low      : std_logic := '0'; -- '1' = actively drive SDA low; '0' = release (pulled up high)
     signal score_toggle_seen : std_logic := '0'; -- last score_toggle value the OLED has drawn
+    signal show_gameover     : std_logic := '0'; -- drives the OLED's "GAME OVER" banner instead of the score
 begin
+
+    show_gameover <= '1' when game_state = ST_GAME_OVER else '0';
 
     oled_scl <= '0' when scl_low = '1' else 'Z';
     oled_sda <= '0' when sda_low = '1' else 'Z';
@@ -438,6 +494,7 @@ begin
                                 end if;
                                 if score_p1 = WIN_SCORE or score_p2 = WIN_SCORE then
                                     game_state <= ST_GAME_OVER;
+                                    score_toggle <= not score_toggle; -- force an OLED redraw for the "GAME OVER" banner
                                 else
                                     -- Wait for any button before serving the next round
                                     game_state <= ST_ROUND_READY;
@@ -469,8 +526,8 @@ begin
                         end if;
 
                     when ST_GAME_OVER =>
-                        -- Only the winner (the recorded server) can serve the next game
-                        if server_is_p1 = '1' and p1_hit = '1' then
+                        -- Either player can press to start the next game; whoever presses serves first
+                        if p1_hit = '1' then
                             score_p1 <= 0;
                             score_p2 <= 0;
                             ball_pos <= 0;
@@ -478,9 +535,10 @@ begin
                             ball_color <= hit_color(not pin_stable(P1_R), not pin_stable(P1_G), not pin_stable(P1_B));
                             move_period <= INITIAL_MOVE_PERIOD;
                             move_tick_counter <= 0;
+                            server_is_p1 <= '1';
                             score_toggle <= not score_toggle;
                             game_state <= ST_PLAY;
-                        elsif server_is_p1 = '0' and p2_hit = '1' then
+                        elsif p2_hit = '1' then
                             score_p1 <= 0;
                             score_p2 <= 0;
                             ball_pos <= NUM_LEDS - 1;
@@ -488,6 +546,7 @@ begin
                             ball_color <= hit_color(not pin_stable(P2_R), not pin_stable(P2_G), not pin_stable(P2_B));
                             move_period <= INITIAL_MOVE_PERIOD;
                             move_tick_counter <= 0;
+                            server_is_p1 <= '0';
                             score_toggle <= not score_toggle;
                             game_state <= ST_PLAY;
                         end if;
@@ -586,7 +645,7 @@ begin
                         i2c_timer <= 0;
                         scl_low <= '1';
                         i2c_bit_idx <= 0;
-                        i2c_cur_byte <= seq_byte(i2c_txn, i2c_byte_idx, score_p1, score_p2);
+                        i2c_cur_byte <= seq_byte(i2c_txn, i2c_byte_idx, score_p1, score_p2, show_gameover);
                         i2c_state <= ST_I2C_BIT_LOW;
                     else
                         i2c_timer <= i2c_timer + 1;
@@ -617,7 +676,7 @@ begin
                             else
                                 i2c_byte_idx <= i2c_byte_idx + 1;
                                 i2c_bit_idx <= 0;
-                                i2c_cur_byte <= seq_byte(i2c_txn, i2c_byte_idx + 1, score_p1, score_p2);
+                                i2c_cur_byte <= seq_byte(i2c_txn, i2c_byte_idx + 1, score_p1, score_p2, show_gameover);
                                 i2c_state <= ST_I2C_BIT_LOW;
                             end if;
                         else
